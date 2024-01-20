@@ -1,5 +1,5 @@
 use axum::{
-    http::{Method, StatusCode},
+    http::{HeaderName, Method, StatusCode},
     response::{IntoResponse, Response, Result},
     routing::post,
     Json, Router,
@@ -19,6 +19,7 @@ pub async fn start_api() {
         // allow `GET` and `POST` when accessing the resource
         .allow_methods([Method::GET, Method::POST])
         // allow requests from any origin
+        .allow_headers(Any)
         .allow_origin(Any);
 
     // build our application with a route
