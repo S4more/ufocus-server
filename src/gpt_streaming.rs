@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 use std::env;
+use tokio::sync::mpsc::{self, Sender};
 
 use chatgpt::{client::ChatGPT, types::ResponseChunk};
 use serde::{Deserialize, Serialize};
@@ -26,31 +27,76 @@ pub struct PartialEvaluationPayload {
     relevance: u8,
 }
 
-pub async fn stream_gpt(
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EvaluationResult {
+    relevance: u8,
+    keywords: Vec<String>,
+    reason: String,
+}
+
+async fn query_and_cache(
+    request_id: String,
     client_query: String,
-) -> Result<PartialEvaluationPayload, chatgpt::err::Error> {
+    partial_send_channel: mpsc::Sender<u8>,
+    evaluation_send_channel: Sender<(String, EvaluationResult)>,
+) -> Result<(), chatgpt::err::Error> {
     let oai_token = env::var("OPENAI_API").expect("OPENAI_API must be set");
     let client = ChatGPT::new(oai_token).unwrap();
 
     let full_prompt = PRE_PROMPT.to_owned() + "\n" + &client_query;
     let mut stream = client.send_message_streaming(full_prompt).await?;
 
-    let mut relevance: u8 = 0;
+    let mut full_response: String = String::from("");
+    let mut found = false;
 
     while let Some(chunck) = stream.next().await {
         if let ResponseChunk::Content {
-            delta,
+            ref delta,
             response_index: _,
         } = chunck
         {
             if let Ok(parse) = delta.parse::<u8>() {
-                relevance = parse;
-                break;
+                if !found {
+                    partial_send_channel.send(parse).await.unwrap();
+                    found = true;
+                }
             };
+
+            full_response += &delta;
         };
+
+        if let ResponseChunk::CloseResponse { response_index: _ } = chunck {
+            break;
+        }
     }
 
-    println!("Relevance: {relevance}");
+    let ev_result: EvaluationResult = serde_json::from_str(&full_response).unwrap();
+    evaluation_send_channel.send((request_id, ev_result)).await;
 
-    Ok(PartialEvaluationPayload { relevance })
+    Ok(())
+}
+
+pub async fn stream_gpt(
+    client_query: String,
+    request_id: String,
+    coordinator_channel: Sender<(String, EvaluationResult)>,
+) -> Result<PartialEvaluationPayload, chatgpt::err::Error> {
+    let (sender, mut receiver) = mpsc::channel::<u8>(1);
+
+    tokio::spawn(async {
+        query_and_cache(request_id, client_query, sender, coordinator_channel)
+            .await
+            .unwrap();
+    });
+
+    if let Some(relevance) = receiver.recv().await {
+        receiver.close();
+        Ok(PartialEvaluationPayload { relevance })
+    } else {
+        panic!();
+    }
+
+    // println!("Relevance: {relevance}");
+
+    // Ok(PartialEvaluationPayload { relevance })
 }
