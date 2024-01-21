@@ -9,7 +9,10 @@ use serde::Deserialize;
 use tower::{Service, ServiceBuilder, ServiceExt};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::gpt_wrapper::{query_gpt, EvaluationResult};
+use crate::{
+    gpt_streaming::{stream_gpt, PartialEvaluationPayload},
+    gpt_wrapper::{query_gpt, EvaluationResult},
+};
 
 pub async fn start_api() {
     // initialize tracing
@@ -26,6 +29,7 @@ pub async fn start_api() {
     let app = Router::new()
         // `GET /` goes to `root`
         .route("/", post(page_evaluation))
+        .route("/streaming/evaluation", post(streaming_evaluation))
         .layer(ServiceBuilder::new().layer(cors));
 
     // run our app with hyper, listening globally on port 3000
@@ -55,5 +59,14 @@ async fn page_evaluation(
             println!("Couldn't fetch because of error: {}", e);
             Err(GptPromptError {})
         }
+    }
+}
+
+async fn streaming_evaluation(
+    Json(payload): Json<PageEvaluationPayload>,
+) -> Result<Json<PartialEvaluationPayload>, GptPromptError> {
+    match stream_gpt(payload.page_body).await {
+        Ok(eval) => Ok(Json(eval)),
+        Err(_) => todo!(),
     }
 }
